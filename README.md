@@ -1,0 +1,113 @@
+# wp-hygiene-kit
+
+[![CI](https://github.com/gexiro-global/wp-hygiene-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/gexiro-global/wp-hygiene-kit/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+Read-only hygiene checks for hosts that serve many WordPress sites, built around one idea:
+**find the sites you are actually serving, not the ones that happen to be on disk.**
+
+| Script | What it does |
+|---|---|
+| `wp-discover.sh` | Lists every live WordPress install: served vhosts, extra roots you declare, Docker bind mounts. Deduplicated by realpath. |
+| `wp-clamav-scan.sh` | Runs ClamAV across that set, at low priority, with per-run alerting. |
+| `wp-permissions-check.sh` | Reports vhosts where the PHP user does not own `wp-content`. |
+
+None of them modify anything.
+
+## Why discovery is the hard part
+
+On a box with twenty sites, `clamscan -r /home` is the obvious approach and the wrong one. It
+scans archived copies, old release directories and backup folders that are not served by anything,
+which is where most of the runtime goes — and it silently misses containerised sites whose files
+live under a Docker volume path you never listed.
+
+`wp-discover` starts from the served set: vhost `docRoot` values, plus roots you explicitly name,
+plus host paths resolved from running WordPress containers. Everything is deduplicated by
+`realpath`, so a symlinked release directory and the vhost pointing at it count once.
+
+It also tells you what it *cannot* see: containers with no resolvable host path are reported as
+`host-scan blind`, because a host-side scanner genuinely cannot reach them and silently skipping
+them would be worse than saying so.
+
+## Install
+
+```bash
+git clone https://github.com/gexiro-global/wp-hygiene-kit.git
+cd wp-hygiene-kit
+./wp-discover.sh          # see what it finds before running anything else
+```
+
+Requires `bash`. `wp-clamav-scan.sh` additionally needs `clamav`; Docker discovery needs the
+`docker` CLI and is skipped automatically if absent.
+
+Tested against OpenLiteSpeed and CyberPanel vhost layouts. Other stacks work through
+`WP_EXTRA_ROOTS`.
+
+## Usage
+
+```bash
+./wp-discover.sh                                   # list live installs
+./wp-permissions-check.sh                          # report ownership mismatches
+./wp-clamav-scan.sh --list                         # dry inventory
+sudo ./wp-clamav-scan.sh                           # scan
+
+# non-OpenLiteSpeed hosts
+WP_EXTRA_ROOTS="/srv/sites/*/public /var/www/*" ./wp-discover.sh
+```
+
+Nightly, via cron:
+
+```cron
+30 3 * * * cd /opt/wp-hygiene-kit && ./wp-clamav-scan.sh
+```
+
+### Environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OLS_VHOST_DIR` | `/usr/local/lsws/conf/vhosts` | Vhost config root |
+| `WP_VHOST_HOME` | `/home` | Expansion for `$VH_ROOT` in `docRoot` |
+| `WP_EXTRA_ROOTS` | *(unset)* | Space-separated globs of additional site roots |
+| `WP_SKIP_DOCKER` | `0` | Set to `1` to skip container discovery |
+| `WP_SCAN_LOG` | `/var/log/clamav/wp_scan.log` | Scan log |
+| `WP_ALERT_LOG` | `/var/log/clamav/wp_scan_INFECTED.log` | Hits only |
+| `WP_ALERT_ENV` | `./alert.env` | Optional Telegram/webhook credentials |
+
+### Alerting
+
+Copy `alert.env.example` to `alert.env`, `chmod 600`, fill in a Telegram bot or a JSON webhook.
+`alert.env` is gitignored. If the file is absent, alerts go to the log and syslog only.
+
+The alert reads **only the current run's block** from the log. A fixed `tail -n` re-alerts on old
+hits every time a later run happens to be shorter, which trains you to ignore the alert.
+
+## What this kit does NOT do
+
+- It does not clean, quarantine, delete or repair anything. Every script is read-only.
+- It does not change ownership or permissions — `wp-permissions-check` reports, nothing else.
+- ClamAV is a signature scanner. It catches commodity PHP malware and known droppers. It will not
+  reliably catch a targeted or obfuscated backdoor, and a clean scan is not proof of a clean site.
+- It does not scan the database, and a large share of real WordPress compromise lives there.
+- It does not check plugin or core versions. Use a dedicated tool for that.
+
+## Limitations
+
+Discovery is a text scan of vhost configuration files. Unusual layouts, include chains or templated
+`docRoot` values can hide a site from it — always sanity-check `./wp-discover.sh` output against what
+you know you host before trusting a scan to be complete.
+
+## Testing
+
+```bash
+./tests/run_tests.sh
+```
+
+Six assertions against a synthetic vhost tree in a temp directory. No ClamAV, no Docker, no root,
+no network.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE). These are server-side administration scripts and do not link
+or derive from WordPress code, so no GPL obligation is inherited.
+
+Built and maintained by Gexiro Global Enterprises Ltd.
