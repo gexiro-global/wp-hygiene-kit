@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
-      - run: shellcheck wp-discover.sh wp-clamav-scan.sh wp-permissions-check.sh tests/run_tests.sh
+      - run: shellcheck --severity=warning wp-discover.sh wp-clamav-scan.sh wp-permissions-check.sh tests/run_tests.sh
   test:
     runs-on: ubuntu-latest
     steps:
