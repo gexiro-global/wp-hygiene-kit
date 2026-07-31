@@ -39,7 +39,10 @@ wp_discover(){
   for f in "$vhost_dir"/*/vhost.conf; do
     [ -f "$f" ] || continue
     dom=$(basename "$(dirname "$f")")
-    dr=$(grep -iE '^[[:space:]]*docRoot' "$f" 2>/dev/null | head -1 | awk '{print $2}')
+    # Strip the directive name rather than taking field 2: awk would truncate a docRoot
+    # containing spaces and the site would be silently omitted from the scan.
+    dr=$(grep -iE '^[[:space:]]*docRoot' "$f" 2>/dev/null | head -1 \
+         | sed -E 's/^[[:space:]]*[dD][oO][cC][rR][oO][oO][tT][[:space:]]+//; s/[[:space:]]+$//')
     [ -z "$dr" ] && continue
     dr=${dr//\$VH_ROOT/${vhost_home}/${dom}}
     _wp_add "$dr/wp-content"

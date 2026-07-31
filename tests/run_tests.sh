@@ -45,6 +45,16 @@ OUT=$("$ROOT/wp-clamav-scan.sh" --list 2>&1)
 printf '%s' "$OUT" | grep -q 'discovered 2 wp-content' \
   && ok 'scan --list reports targets without scanning' || no 'scan --list reports targets without scanning'
 
+echo '== regressions =='
+# A docRoot containing spaces must still be discovered; taking awk field 2 would truncate it
+# and silently drop the site from every scan.
+mkdir -p "$T/vhosts/site-c.example"
+mkdir -p "$T/home/site c/public html/wp-content"
+printf 'docRoot %s\nextUser site-c\n' "$T/home/site c/public html" > "$T/vhosts/site-c.example/vhost.conf"
+OUT=$("$ROOT/wp-discover.sh")
+printf '%s' "$OUT" | grep -q 'public html/wp-content' \
+  && ok 'discovers a docRoot containing spaces' || no 'discovers a docRoot containing spaces'
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]

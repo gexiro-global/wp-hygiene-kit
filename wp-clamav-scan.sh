@@ -57,6 +57,16 @@ command -v clamscan >/dev/null 2>&1 || { echo "clamscan not found - install clam
   echo "===== END $(ts) ====="
 } >> "$LOG" 2>&1
 
+# clamscan: 0 = clean, 1 = infections found, 2+ = the scanner itself failed. Treating a
+# scanner failure as a clean result is how an unscanned host gets reported as healthy.
+SCAN_RC=$(awk '/^clamscan rc=/{r=$0} END{sub(/^clamscan rc=/,"",r); print r+0}' "$LOG")
+if [ "${SCAN_RC:-0}" -ge 2 ]; then
+  echo "[$(ts)] SCAN-ERROR clamscan exited $SCAN_RC - results are incomplete, do NOT treat as clean" >> "$ALERT"
+  echo "SCAN-ERROR: clamscan exited $SCAN_RC - results are incomplete" >&2
+  command -v logger >/dev/null 2>&1 && logger -t wp-clamav-scan "SCAN-ERROR rc=$SCAN_RC"
+  exit 2
+fi
+
 # Alert on THIS run's block only. Tailing a fixed number of lines re-alerts on old hits
 # whenever a later run happens to be short.
 HITS=$(awk '/===== ClamAV WordPress scan START/{buf=""} {buf=buf $0 ORS} END{printf "%s", buf}' "$LOG" \
@@ -67,7 +77,15 @@ N=$(printf '%s\n' "$HITS" | grep -c 'FOUND')
 { echo "[$(ts)] ClamAV reported $N infected file(s) under WordPress - investigate:"; printf '%s\n' "$HITS"; } >> "$ALERT"
 command -v logger >/dev/null 2>&1 && logger -t wp-clamav-scan "INFECTED: $N hit(s), see $ALERT"
 
-[ -f "$ALERT_ENV" ] || exit 0
+[ -f "$ALERT_ENV" ] || exit 1
+
+# This file is executed as shell code, so refuse it unless only its owner can write to it.
+# A group- or world-writable alert.env in the working directory is arbitrary code execution
+# as whoever runs the scan, which is typically root.
+if [ -n "$(find "$ALERT_ENV" -maxdepth 0 -perm /022 2>/dev/null)" ]; then
+  echo "refusing to source a group/world-writable $ALERT_ENV (chmod 600 it)" >&2
+  exit 2
+fi
 # shellcheck disable=SC1090
 . "$ALERT_ENV"
 MSG="ClamAV: $N infected file(s) under WordPress on $(hostname). First lines: $(printf '%s\n' "$HITS" | head -5)"

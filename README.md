@@ -1,6 +1,6 @@
 # wp-hygiene-kit
 
-[![CI](https://github.com/gexiro-global/wp-hygiene-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/gexiro-global/wp-hygiene-kit/actions/workflows/ci.yml)
+[![CI](https://github.com/dzeusking-dev/wp-hygiene-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/dzeusking-dev/wp-hygiene-kit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Read-only hygiene checks for hosts that serve many WordPress sites, built around one idea:
@@ -12,7 +12,9 @@ Read-only hygiene checks for hosts that serve many WordPress sites, built around
 | `wp-clamav-scan.sh` | Runs ClamAV across that set, at low priority, with per-run alerting. |
 | `wp-permissions-check.sh` | Reports vhosts where the PHP user does not own `wp-content`. |
 
-None of them modify anything.
+None of them modify, quarantine or repair a WordPress installation. `wp-clamav-scan.sh` does
+write its own log files (and creates their directory), and sends an alert if you configure one -
+that is the only thing any of them writes.
 
 ## Why discovery is the hard part
 
@@ -32,7 +34,7 @@ them would be worse than saying so.
 ## Install
 
 ```bash
-git clone https://github.com/gexiro-global/wp-hygiene-kit.git
+git clone https://github.com/dzeusking-dev/wp-hygiene-kit.git
 cd wp-hygiene-kit
 ./wp-discover.sh          # see what it finds before running anything else
 ```
@@ -83,7 +85,8 @@ hits every time a later run happens to be shorter, which trains you to ignore th
 
 ## What this kit does NOT do
 
-- It does not clean, quarantine, delete or repair anything. Every script is read-only.
+- It does not clean, quarantine, delete or repair anything. The only files any script writes
+  are its own logs.
 - It does not change ownership or permissions — `wp-permissions-check` reports, nothing else.
 - ClamAV is a signature scanner. It catches commodity PHP malware and known droppers. It will not
   reliably catch a targeted or obfuscated backdoor, and a clean scan is not proof of a clean site.

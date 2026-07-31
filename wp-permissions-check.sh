@@ -22,8 +22,12 @@ MISMATCH=0; CHECKED=0
 for vhost in "$VHOST_DIR"/*/vhost.conf; do
   [ -f "$vhost" ] || continue
   domain=$(basename "$(dirname "$vhost")")
-  extuser=$(grep -i 'extUser' "$vhost" 2>/dev/null | head -1 | awk '{print $2}')
-  docroot=$(grep -iE '^[[:space:]]*docRoot' "$vhost" 2>/dev/null | head -1 | awk '{print $2}')
+  extuser=$(grep -i 'extUser' "$vhost" 2>/dev/null | head -1 \
+            | sed -E 's/^[[:space:]]*[eE][xX][tT][uU][sS][eE][rR][[:space:]]+//; s/[[:space:]]+$//')
+  # Strip the directive name rather than taking field 2, so a docRoot containing spaces is
+  # checked instead of silently skipped.
+  docroot=$(grep -iE '^[[:space:]]*docRoot' "$vhost" 2>/dev/null | head -1 \
+            | sed -E 's/^[[:space:]]*[dD][oO][cC][rR][oO][oO][tT][[:space:]]+//; s/[[:space:]]+$//')
   [ -z "$docroot" ] && continue
   docroot=${docroot//\$VH_ROOT/${WP_VHOST_HOME:-/home}/${domain}}
   [ -d "$docroot/wp-content" ] || continue
