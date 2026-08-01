@@ -50,17 +50,23 @@ command -v clamscan >/dev/null 2>&1 || { echo "clamscan not found - install clam
   echo "targets: ${#WP_TARGETS[@]}"
   [ "${#WP_CONTAINER_TARGETS[@]}" -gt 0 ] && printf 'container target: %s\n' "${WP_CONTAINER_TARGETS[@]}"
   [ "${#WP_CONTAINER_BLIND[@]}" -gt 0 ] && printf 'WARNING host-scan blind: %s\n' "${WP_CONTAINER_BLIND[@]}"
-  nice -n 19 ionice -c3 clamscan -r -i \
-    --exclude-dir='(node_modules|\.git|/cache|wflogs|uploads/cache|backup|backups|\.archived)' \
-    --max-filesize=20M --max-scansize=100M "${WP_TARGETS[@]}"
-  echo "clamscan rc=$?"
+} >> "$LOG" 2>&1
+
+# Capture the scanner's status from the scanner, not by reading it back out of the log: a log
+# that is unwritable, rotated mid-run, or written to concurrently would hand back a fabricated 0.
+nice -n 19 ionice -c3 clamscan -r -i \
+  --exclude-dir='(node_modules|\.git|/cache|wflogs|uploads/cache|backup|backups|\.archived)' \
+  --max-filesize=20M --max-scansize=100M "${WP_TARGETS[@]}" >> "$LOG" 2>&1
+SCAN_RC=$?
+
+{
+  echo "clamscan rc=$SCAN_RC"
   echo "===== END $(ts) ====="
 } >> "$LOG" 2>&1
 
 # clamscan: 0 = clean, 1 = infections found, 2+ = the scanner itself failed. Treating a
 # scanner failure as a clean result is how an unscanned host gets reported as healthy.
-SCAN_RC=$(awk '/^clamscan rc=/{r=$0} END{sub(/^clamscan rc=/,"",r); print r+0}' "$LOG")
-if [ "${SCAN_RC:-0}" -ge 2 ]; then
+if [ "${SCAN_RC:-2}" -ge 2 ]; then
   echo "[$(ts)] SCAN-ERROR clamscan exited $SCAN_RC - results are incomplete, do NOT treat as clean" >> "$ALERT"
   echo "SCAN-ERROR: clamscan exited $SCAN_RC - results are incomplete" >&2
   command -v logger >/dev/null 2>&1 && logger -t wp-clamav-scan "SCAN-ERROR rc=$SCAN_RC"
@@ -80,10 +86,28 @@ command -v logger >/dev/null 2>&1 && logger -t wp-clamav-scan "INFECTED: $N hit(
 [ -f "$ALERT_ENV" ] || exit 1
 
 # This file is executed as shell code, so refuse it unless only its owner can write to it.
-# A group- or world-writable alert.env in the working directory is arbitrary code execution
-# as whoever runs the scan, which is typically root.
-if [ -n "$(find "$ALERT_ENV" -maxdepth 0 -perm /022 2>/dev/null)" ]; then
-  echo "refusing to source a group/world-writable $ALERT_ENV (chmod 600 it)" >&2
+# A group- or world-writable alert.env is arbitrary code execution as whoever runs the scan,
+# typically root.
+#
+# `find -perm /022` is a GNU extension: on BSD and macOS it errors out, and with stderr
+# discarded that reads as "not writable" - the check would fail OPEN on exactly the systems it
+# was not tested on. This uses python3 and refuses to source the file if the mode cannot be
+# determined at all.
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$ALERT_ENV" <<'PY'
+import os, stat, sys
+try:
+    mode = os.stat(sys.argv[1]).st_mode
+except OSError:
+    sys.exit(1)          # cannot tell -> treat as unsafe
+sys.exit(1 if mode & (stat.S_IWGRP | stat.S_IWOTH) else 0)
+PY
+  if [ $? -ne 0 ]; then
+    echo "refusing to source $ALERT_ENV: it is group/world-writable or its mode cannot be read" >&2
+    exit 2
+  fi
+else
+  echo "refusing to source $ALERT_ENV: python3 is unavailable, so its permissions cannot be verified" >&2
   exit 2
 fi
 # shellcheck disable=SC1090

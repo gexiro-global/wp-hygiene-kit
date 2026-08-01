@@ -55,6 +55,27 @@ OUT=$("$ROOT/wp-discover.sh")
 printf '%s' "$OUT" | grep -q 'public html/wp-content' \
   && ok 'discovers a docRoot containing spaces' || no 'discovers a docRoot containing spaces'
 
+# A scanner that fails must not be reported as a clean scan. Without this case the whole
+# exit-code check can be deleted and every other test still passes.
+STUB=$(mktemp -d)
+printf '%s\n' '#!/bin/bash' 'echo "ERROR: cannot open directory"' 'exit 2' > "$STUB/clamscan"
+printf '%s\n' '#!/bin/bash' 'exec "$@"' > "$STUB/nice"
+printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$STUB/ionice"
+chmod +x "$STUB/clamscan" "$STUB/nice" "$STUB/ionice"
+OUT=$(PATH="$STUB:$PATH" WP_SCAN_LOG="$T/scan.log" WP_ALERT_LOG="$T/alert.log" \
+      "$ROOT/wp-clamav-scan.sh" 2>&1)
+RC=$?
+if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'SCAN-ERROR'; then
+  ok 'a failing scanner exits 2 instead of reporting a clean scan'
+else
+  no "a failing scanner exits 2 instead of reporting a clean scan (got rc=$RC)"
+fi
+grep -q 'SCAN-ERROR' "$T/alert.log" 2>/dev/null \
+  && ok 'the scan error is recorded in the alert log' \
+  || no 'the scan error is recorded in the alert log'
+rm -rf "$STUB"
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]
+
