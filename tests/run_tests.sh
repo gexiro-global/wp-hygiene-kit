@@ -75,7 +75,40 @@ grep -q 'SCAN-ERROR' "$T/alert.log" 2>/dev/null \
   || no 'the scan error is recorded in the alert log'
 rm -rf "$STUB"
 
+# The alert.env permission check must be exercised, or it can be deleted with a green suite.
+# Root ignores file modes, so assert on the check's own logic rather than on a chmod.
+PERM=$(mktemp -d)
+printf 'X=1\n' > "$PERM/alert.env"
+chmod 666 "$PERM/alert.env"
+if python3 - "$PERM/alert.env" <<'PYEOF'
+import os, stat, sys
+st = os.stat(sys.argv[1])
+sys.exit(0 if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH) else 1)
+PYEOF
+then
+  grep -q 'S_IWGRP' "$ROOT/wp-clamav-scan.sh" \
+    && ok 'the scanner checks group/world writability before sourcing alert.env' \
+    || no 'the scanner checks group/world writability before sourcing alert.env'
+  grep -q 'st.st_uid not in' "$ROOT/wp-clamav-scan.sh" \
+    && ok 'the scanner also checks who owns alert.env' \
+    || no 'the scanner also checks who owns alert.env'
+else
+  no 'test fixture did not become group/world-writable'
+fi
+rm -rf "$PERM"
+
+# A log that cannot be written must abort rather than let an unperformed scan look clean.
+OUT=$(OLS_VHOST_DIR="$T/vhosts" WP_VHOST_HOME="$T/home" WP_SKIP_DOCKER=1 \
+      WP_SCAN_LOG=/dev/null/scan.log WP_ALERT_LOG="$T/a.log" "$ROOT/wp-clamav-scan.sh" 2>&1)
+RC=$?
+if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'refusing to run a scan'; then
+  ok 'refuses to scan when results cannot be recorded'
+else
+  no "refuses to scan when results cannot be recorded (got rc=$RC)"
+fi
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]
+
 

@@ -28,6 +28,16 @@ LIST_ONLY=0; [ "${1:-}" = "--list" ] && LIST_ONLY=1
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 ts(){ date '+%F %T'; }
 
+# If the log cannot be appended to, the redirection below fails before clamscan ever runs and
+# bash returns 1 - which in ClamAV's own convention means "infections found". An entirely
+# unperformed scan would then be indistinguishable from a completed one. Fail here instead.
+for _f in "$LOG" "$ALERT"; do
+  if ! : 2>/dev/null >> "$_f"; then
+    echo "cannot write to $_f - refusing to run a scan whose results cannot be recorded" >&2
+    exit 2
+  fi
+done
+
 wp_discover
 
 if [ "$LIST_ONLY" = "1" ]; then
@@ -95,17 +105,42 @@ command -v logger >/dev/null 2>&1 && logger -t wp-clamav-scan "INFECTED: $N hit(
 # determined at all.
 if command -v python3 >/dev/null 2>&1; then
   python3 - "$ALERT_ENV" <<'PY'
-import os, stat, sys
+import os
+import stat
+import sys
+
+path = sys.argv[1]
 try:
-    mode = os.stat(sys.argv[1]).st_mode
+    st = os.stat(path)
 except OSError:
-    sys.exit(1)          # cannot tell -> treat as unsafe
-sys.exit(1 if mode & (stat.S_IWGRP | stat.S_IWOTH) else 0)
+    sys.exit(1)                      # cannot tell -> treat as unsafe
+
+if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    sys.exit(1)                      # someone else can rewrite it
+
+# Mode alone is not enough. A file owned by a site user, mode 600, is still that user's code
+# running as whoever launched the scan - typically root. Accept it only if it belongs to the
+# running user or to root.
+if st.st_uid not in (os.geteuid(), 0):
+    sys.exit(2)
+
+# The directory it sits in must not be writable by others either, or the file can be replaced.
+parent = os.path.dirname(os.path.abspath(path)) or "."
+try:
+    pst = os.stat(parent)
+except OSError:
+    sys.exit(1)
+if pst.st_mode & stat.S_IWOTH and not (pst.st_mode & stat.S_ISVTX):
+    sys.exit(3)
+sys.exit(0)
 PY
-  if [ $? -ne 0 ]; then
-    echo "refusing to source $ALERT_ENV: it is group/world-writable or its mode cannot be read" >&2
-    exit 2
-  fi
+  rc=$?
+  case "$rc" in
+    0) ;;
+    2) echo "refusing to source $ALERT_ENV: it is not owned by the user running the scan or by root" >&2; exit 2 ;;
+    3) echo "refusing to source $ALERT_ENV: its directory is world-writable, so the file can be replaced" >&2; exit 2 ;;
+    *) echo "refusing to source $ALERT_ENV: it is group/world-writable or its mode cannot be read" >&2; exit 2 ;;
+  esac
 else
   echo "refusing to source $ALERT_ENV: python3 is unavailable, so its permissions cannot be verified" >&2
   exit 2

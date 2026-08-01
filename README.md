@@ -105,8 +105,8 @@ you know you host before trusting a scan to be complete.
 ./tests/run_tests.sh
 ```
 
-Six assertions against a synthetic vhost tree in a temp directory. No ClamAV, no Docker, no root,
-no network.
+Runs against a synthetic vhost tree in a temp directory, with a stubbed scanner for the failure
+paths. No real ClamAV, no Docker, no root, no network.
 
 ## License
 
