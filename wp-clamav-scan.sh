@@ -28,15 +28,6 @@ LIST_ONLY=0; [ "${1:-}" = "--list" ] && LIST_ONLY=1
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 ts(){ date '+%F %T'; }
 
-# If the log cannot be appended to, the redirection below fails before clamscan ever runs and
-# bash returns 1 - which in ClamAV's own convention means "infections found". An entirely
-# unperformed scan would then be indistinguishable from a completed one. Fail here instead.
-for _f in "$LOG" "$ALERT"; do
-  if ! : 2>/dev/null >> "$_f"; then
-    echo "cannot write to $_f - refusing to run a scan whose results cannot be recorded" >&2
-    exit 2
-  fi
-done
 
 wp_discover
 
@@ -47,6 +38,16 @@ if [ "$LIST_ONLY" = "1" ]; then
   [ "${#WP_CONTAINER_BLIND[@]}" -gt 0 ] && { echo 'WARNING - host-scan blind containers:'; printf '  %s\n' "${WP_CONTAINER_BLIND[@]}"; }
   exit 0
 fi
+
+# If the log cannot be appended to, the redirection below fails before clamscan ever runs and
+# bash returns 1 - which in ClamAV's own convention means "infections found". An entirely
+# unperformed scan would then be indistinguishable from a completed one. Fail here instead.
+for _f in "$LOG" "$ALERT"; do
+  if ! : 2>/dev/null >> "$_f"; then
+    echo "cannot write to $_f - refusing to run a scan whose results cannot be recorded" >&2
+    exit 2
+  fi
+done
 
 if [ "${#WP_TARGETS[@]}" -eq 0 ]; then
   echo "[$(ts)] no WordPress targets discovered" >> "$LOG"

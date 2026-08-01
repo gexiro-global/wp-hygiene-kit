@@ -107,8 +107,20 @@ else
   no "refuses to scan when results cannot be recorded (got rc=$RC)"
 fi
 
+# Listing writes nothing, so it must work for a user who cannot write the scan log - the
+# inventory is the one thing you want to run before deciding anything else.
+OUT=$(WP_SCAN_LOG=/dev/null/x.log WP_ALERT_LOG=/dev/null/y.log \
+      "$ROOT/wp-clamav-scan.sh" --list 2>&1)
+RC=$?
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'wp-content target'; then
+  ok '--list works without a writable log'
+else
+  no "--list works without a writable log (got rc=$RC)"
+fi
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]
+
 
 
