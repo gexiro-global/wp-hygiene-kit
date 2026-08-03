@@ -21,6 +21,22 @@ set -uo pipefail
 declare -A _WP_SEEN
 WP_TARGETS=(); WP_CONTAINER_TARGETS=(); WP_CONTAINER_BLIND=()
 
+# Add a whole WordPress installation, not only wp-content. Core files, wp-admin, wp-includes
+# and a dropped-in PHP file at the document root are all places malware lands; scanning only
+# wp-content would report a compromised site as clean.
+#
+# Set WP_CONTENT_ONLY=1 for the narrower, faster sweep.
+_wp_add_site(){
+  local root="$1"
+  [ -d "$root" ] || return 0
+  [ -d "$root/wp-content" ] || return 0
+  if [ "${WP_CONTENT_ONLY:-0}" = "1" ]; then
+    _wp_add "$root/wp-content"
+  else
+    _wp_add "$root"
+  fi
+}
+
 _wp_add(){
   local d="$1" rp
   [ -d "$d" ] || return 0
@@ -45,14 +61,14 @@ wp_discover(){
          | sed -E 's/^[[:space:]]*[dD][oO][cC][rR][oO][oO][tT][[:space:]]+//; s/[[:space:]]+$//')
     [ -z "$dr" ] && continue
     dr=${dr//\$VH_ROOT/${vhost_home}/${dom}}
-    _wp_add "$dr/wp-content"
+    _wp_add_site "$dr"
   done
 
   # 2. operator-declared extra roots
   local glob d
   for glob in ${WP_EXTRA_ROOTS:-}; do
     for d in $glob; do
-      [ -d "$d/wp-content" ] && _wp_add "$d/wp-content"
+      _wp_add_site "$d"
       [ "$(basename "$d")" = "wp-content" ] && _wp_add "$d"
     done
   done
@@ -65,7 +81,7 @@ wp_discover(){
       while IFS= read -r src; do
         [ -z "$src" ] && continue
         if [ -d "$src/wp-content" ]; then
-          _wp_add "$src/wp-content"; WP_CONTAINER_TARGETS+=("$c -> $src/wp-content"); found=1
+          _wp_add_site "$src"; WP_CONTAINER_TARGETS+=("$c -> $src"); found=1
         elif [ "$(basename "$src")" = "wp-content" ] && [ -d "$src" ]; then
           _wp_add "$src"; WP_CONTAINER_TARGETS+=("$c -> $src"); found=1
         fi
@@ -78,7 +94,7 @@ wp_discover(){
 # Standalone mode: print what was found and exit.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   wp_discover
-  echo "discovered ${#WP_TARGETS[@]} wp-content target(s):"
+  echo "discovered ${#WP_TARGETS[@]} WordPress target(s):"
   [ "${#WP_TARGETS[@]}" -gt 0 ] && printf '  %s\n' "${WP_TARGETS[@]}"
   if [ "${#WP_CONTAINER_TARGETS[@]}" -gt 0 ]; then
     echo 'container targets:'; printf '  %s\n' "${WP_CONTAINER_TARGETS[@]}"

@@ -32,7 +32,7 @@ ts(){ date '+%F %T'; }
 wp_discover
 
 if [ "$LIST_ONLY" = "1" ]; then
-  echo "discovered ${#WP_TARGETS[@]} wp-content target(s):"
+  echo "discovered ${#WP_TARGETS[@]} WordPress target(s):"
   [ "${#WP_TARGETS[@]}" -gt 0 ] && printf '  %s\n' "${WP_TARGETS[@]}"
   [ "${#WP_CONTAINER_TARGETS[@]}" -gt 0 ] && { echo 'container targets:'; printf '  %s\n' "${WP_CONTAINER_TARGETS[@]}"; }
   [ "${#WP_CONTAINER_BLIND[@]}" -gt 0 ] && { echo 'WARNING - host-scan blind containers:'; printf '  %s\n' "${WP_CONTAINER_BLIND[@]}"; }
@@ -50,11 +50,25 @@ for _f in "$LOG" "$ALERT"; do
 done
 
 if [ "${#WP_TARGETS[@]}" -eq 0 ]; then
+  # Finding nothing to scan is not the same as finding nothing wrong. Exit non-zero so a
+  # cron job cannot report a misconfigured host as a clean one.
   echo "[$(ts)] no WordPress targets discovered" >> "$LOG"
-  exit 0
+  echo "no WordPress installations discovered - check OLS_VHOST_DIR / WP_EXTRA_ROOTS" >&2
+  exit 1
 fi
 
 command -v clamscan >/dev/null 2>&1 || { echo "clamscan not found - install clamav first" >&2; exit 3; }
+
+# Two overlapping runs would interleave the shared log, which is also what the alert is
+# extracted from - so a concurrent run can corrupt the very block used to decide whether
+# anything was found. Take an exclusive lock and skip rather than queue.
+SCAN_LOCK=${WP_SCAN_LOCK:-/tmp/wp-clamav-scan.lock}
+if command -v flock >/dev/null 2>&1; then
+  { exec 8>"$SCAN_LOCK"; } 2>/dev/null || true
+  if [ -e "$SCAN_LOCK" ]; then
+    flock -n 8 || { echo "another scan is already running ($SCAN_LOCK) - skipping" >&2; exit 0; }
+  fi
+fi
 
 {
   echo "===== ClamAV WordPress scan START $(ts) ====="
@@ -151,13 +165,18 @@ fi
 MSG="ClamAV: $N infected file(s) under WordPress on $(hostname). First lines: $(printf '%s\n' "$HITS" | head -5)"
 
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-  curl -s --max-time 15 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${MSG}" >/dev/null 2>&1 \
+  # The token goes in the URL, so passing it as an argument would expose it in the process list
+  # to every local user. Hand curl the URL through a config stream on stdin instead.
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
+    | curl -s --max-time 15 -K - \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${MSG}" >/dev/null 2>&1 \
     || logger -t wp-clamav-scan 'telegram alert failed'
 fi
 
 if [ -n "${ALERT_WEBHOOK:-}" ]; then
-  curl -s --max-time 15 -H 'Content-Type: application/json' -X POST "$ALERT_WEBHOOK" \
-    --data "$(printf '%s' "$MSG" | python3 -c 'import json,sys;print(json.dumps({"text":sys.stdin.read()}))')" >/dev/null 2>&1 \
+  # A webhook URL frequently embeds a token in its path or query, so it is kept out of argv too.
+  printf 'url = "%s"\n' "$ALERT_WEBHOOK" \
+    | curl -s --max-time 15 -K - -H 'Content-Type: application/json' -X POST \
+        --data "$(printf '%s' "$MSG" | python3 -c 'import json,sys;print(json.dumps({"text":sys.stdin.read()}))')" >/dev/null 2>&1 \
     || logger -t wp-clamav-scan 'webhook alert failed'
 fi

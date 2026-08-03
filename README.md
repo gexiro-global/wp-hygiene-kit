@@ -8,7 +8,7 @@ Read-only hygiene checks for hosts that serve many WordPress sites, built around
 
 | Script | What it does |
 |---|---|
-| `wp-discover.sh` | Lists every live WordPress install: served vhosts, extra roots you declare, Docker bind mounts. Deduplicated by realpath. |
+| `wp-discover.sh` | Lists every live WordPress install: served vhosts, extra roots you declare, Docker bind mounts. Deduplicated by realpath. Returns the installation root, so a scan covers core files and `wp-admin`, not only `wp-content`. |
 | `wp-clamav-scan.sh` | Runs ClamAV across that set, at low priority, with per-run alerting. |
 | `wp-permissions-check.sh` | Reports vhosts where the PHP user does not own `wp-content`. |
 
@@ -67,6 +67,8 @@ Nightly, via cron:
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `WP_CONTENT_ONLY` | `0` | Set to `1` to scan only `wp-content` instead of the whole installation |
+| `WP_SCAN_LOCK` | `/tmp/wp-clamav-scan.lock` | Lock file preventing two concurrent scans |
 | `OLS_VHOST_DIR` | `/usr/local/lsws/conf/vhosts` | Vhost config root |
 | `WP_VHOST_HOME` | `/home` | Expansion for `$VH_ROOT` in `docRoot` |
 | `WP_EXTRA_ROOTS` | *(unset)* | Space-separated globs of additional site roots |
@@ -83,6 +85,17 @@ Copy `alert.env.example` to `alert.env`, `chmod 600`, fill in a Telegram bot or 
 The alert reads **only the current run's block** from the log. A fixed `tail -n` re-alerts on old
 hits every time a later run happens to be shorter, which trains you to ignore the alert.
 
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Scan completed, nothing found |
+| `1` | No WordPress installations were discovered - a configuration problem, deliberately not reported as "clean" |
+| `2` | The scanner failed, or `alert.env` was refused; results are incomplete |
+| `3` | `clamscan` is not installed |
+
+A scan that could not run is never reported as a clean one.
+
 ## What this kit does NOT do
 
 - It does not clean, quarantine, delete or repair anything. The only files any script writes
@@ -90,6 +103,9 @@ hits every time a later run happens to be shorter, which trains you to ignore th
 - It does not change ownership or permissions — `wp-permissions-check` reports, nothing else.
 - ClamAV is a signature scanner. It catches commodity PHP malware and known droppers. It will not
   reliably catch a targeted or obfuscated backdoor, and a clean scan is not proof of a clean site.
+- It scans the WordPress installation directory - core files, `wp-admin`, `wp-includes`,
+  `wp-content` and anything else dropped in the document root. Set `WP_CONTENT_ONLY=1` for the
+  narrower sweep if runtime matters more to you than coverage.
 - It does not scan the database, and a large share of real WordPress compromise lives there.
 - It does not check plugin or core versions. Use a dedicated tool for that.
 
