@@ -17,7 +17,7 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=wp-discover.sh
+# shellcheck source=wp-discover.sh disable=SC1091
 . "$HERE/wp-discover.sh"
 
 LOG="${WP_SCAN_LOG:-/var/log/clamav/wp_scan.log}"
@@ -98,16 +98,34 @@ if [ "${SCAN_RC:-2}" -ge 2 ]; then
   exit 2
 fi
 
+# Nothing found: the one path that may report success.
+if [ "$SCAN_RC" -eq 0 ]; then
+  exit 0
+fi
+
+# clamscan exited 1: infections were found. Everything below only decides how loudly to say
+# so - the outcome is already settled.
+#
 # Alert on THIS run's block only. Tailing a fixed number of lines re-alerts on old hits
 # whenever a later run happens to be short.
 HITS=$(awk '/===== ClamAV WordPress scan START/{buf=""} {buf=buf $0 ORS} END{printf "%s", buf}' "$LOG" \
         | grep ' FOUND$' || true)
-[ -z "$HITS" ] && exit 0
+# Deliberately NOT `[ -z "$HITS" ] && exit 0`. The verdict belongs to clamscan, which already
+# told us it found something; the log parser only fills in the alert body. A format change, a
+# truncated log or a missed match must never downgrade an infection to a clean run.
+if [ -z "$HITS" ]; then
+  HITS="(clamscan reported infections, but no FOUND lines could be read back from the log)"
+  N="an unknown number of"
+else
+  N=$(printf '%s\n' "$HITS" | grep -c 'FOUND')
+fi
 
-N=$(printf '%s\n' "$HITS" | grep -c 'FOUND')
+
 { echo "[$(ts)] ClamAV reported $N infected file(s) under WordPress - investigate:"; printf '%s\n' "$HITS"; } >> "$ALERT"
 command -v logger >/dev/null 2>&1 && logger -t wp-clamav-scan "INFECTED: $N hit(s), see $ALERT"
 
+# From here on an infection has been found. Whatever happens with alert delivery, this run
+# must exit 1: a failed notification is not a reason to tell cron the host is clean.
 [ -f "$ALERT_ENV" ] || exit 1
 
 # This file is executed as shell code, so refuse it unless only its owner can write to it.
@@ -180,3 +198,6 @@ if [ -n "${ALERT_WEBHOOK:-}" ]; then
         --data "$(printf '%s' "$MSG" | python3 -c 'import json,sys;print(json.dumps({"text":sys.stdin.read()}))')" >/dev/null 2>&1 \
     || logger -t wp-clamav-scan 'webhook alert failed'
 fi
+
+# Explicit and unconditional: this run found an infection.
+exit 1

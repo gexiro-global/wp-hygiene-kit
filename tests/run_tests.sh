@@ -65,8 +65,10 @@ printf '%s' "$OUT" | grep -q 'public html' \
 # exit-code check can be deleted and every other test still passes.
 STUB=$(mktemp -d)
 printf '%s\n' '#!/bin/bash' 'echo "ERROR: cannot open directory"' 'exit 2' > "$STUB/clamscan"
-printf '%s\n' '#!/bin/bash' 'exec "$@"' > "$STUB/nice"
-printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$STUB/ionice"
+# nice is called as `nice -n 19 ...` and ionice as `ionice -c3 ...`; the stubs must consume
+# exactly those options, or they fail before clamscan runs and the test passes vacuously.
+printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$STUB/nice"
+printf '%s\n' '#!/bin/bash' 'shift 1; exec "$@"' > "$STUB/ionice"
 chmod +x "$STUB/clamscan" "$STUB/nice" "$STUB/ionice"
 OUT=$(PATH="$STUB:$PATH" WP_SCAN_LOG="$T/scan.log" WP_ALERT_LOG="$T/alert.log" \
       "$ROOT/wp-clamav-scan.sh" 2>&1)
@@ -124,9 +126,50 @@ else
   no "--list works without a writable log (got rc=$RC)"
 fi
 
+# The verdict must come from clamscan's exit status, never from whether the log parser managed
+# to find FOUND lines. Each row below is a way the parser could be wrong while the scanner was
+# right; only the first row may report success.
+verdict_case(){ # <scanner-rc> <emit-FOUND> <alert.env> <expected-wrapper-rc> <label>
+  local vt vs
+  vt=$(mktemp -d); vs=$(mktemp -d)
+  mkdir -p "$vt/vhosts/s.example" "$vt/home/s.example/public_html/wp-content"
+  printf 'docRoot $VH_ROOT/public_html\nextUser s\n' > "$vt/vhosts/s.example/vhost.conf"
+  {
+    echo '#!/bin/bash'
+    [ "$2" = yes ] && echo 'echo "/x/evil.php: Php.Malware FOUND"'
+    echo "exit $1"
+  } > "$vs/clamscan"
+  printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$vs/nice"
+  printf '%s\n' '#!/bin/bash' 'shift 1; exec "$@"' > "$vs/ionice"
+  chmod +x "$vs/clamscan" "$vs/nice" "$vs/ionice"
+  # An array, not a string: unquoted it needs SC2086 silenced, and quoted it would hand env
+  # an empty argument whenever no alert config is wanted.
+  local extra=()
+  if [ "$3" = yes ]; then
+    printf 'TELEGRAM_BOT_TOKEN=\nTELEGRAM_CHAT_ID=\n' > "$vt/alert.env"
+    chmod 600 "$vt/alert.env"
+    extra=(WP_ALERT_ENV="$vt/alert.env")
+  fi
+  env PATH="$vs:$PATH" OLS_VHOST_DIR="$vt/vhosts" WP_VHOST_HOME="$vt/home" WP_SKIP_DOCKER=1 \
+      WP_SCAN_LOG="$vt/s.log" WP_ALERT_LOG="$vt/a.log" WP_SCAN_LOCK="$vt/lk" \
+      ${extra[@]+"${extra[@]}"} \
+      "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+  local rc=$?
+  if [ "$rc" -eq "$4" ]; then ok "$5"; else no "$5 (expected $4, got $rc)"; fi
+  rm -rf "$vt" "$vs"
+}
+
+verdict_case 0 no  no  0 'a clean scan exits 0'
+verdict_case 1 yes no  1 'an infection with readable FOUND lines exits 1'
+verdict_case 1 no  no  1 'an infection exits 1 even when no FOUND line can be parsed'
+verdict_case 1 yes yes 1 'an infection exits 1 after alerting'
+verdict_case 1 no  yes 1 'an unparseable infection exits 1 even with alerting configured'
+verdict_case 2 no  no  2 'a scanner failure exits 2'
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]
+
 
 
 
