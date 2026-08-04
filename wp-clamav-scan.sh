@@ -62,13 +62,17 @@ command -v clamscan >/dev/null 2>&1 || { echo "clamscan not found - install clam
 # Two overlapping runs would interleave the shared log, which is also what the alert is
 # extracted from - so a concurrent run can corrupt the very block used to decide whether
 # anything was found. Take an exclusive lock and skip rather than queue.
+# Fail closed, like the rest: the log this run appends to is also the source the alert is
+# extracted from, so two overlapping scans can corrupt the very block used to decide whether
+# anything was found. If the lock cannot be taken, do not scan.
 SCAN_LOCK=${WP_SCAN_LOCK:-/tmp/wp-clamav-scan.lock}
-if command -v flock >/dev/null 2>&1; then
-  { exec 8>"$SCAN_LOCK"; } 2>/dev/null || true
-  if [ -e "$SCAN_LOCK" ]; then
-    flock -n 8 || { echo "another scan is already running ($SCAN_LOCK) - skipping" >&2; exit 0; }
-  fi
+command -v flock >/dev/null 2>&1 \
+  || { echo "flock is required so two scans cannot interleave their log" >&2; exit 2; }
+if ! { exec 8>"$SCAN_LOCK"; } 2>/dev/null; then
+  echo "cannot open lock file $SCAN_LOCK - refusing to scan unserialised" >&2
+  exit 2
 fi
+flock -n 8 || { echo "another scan is already running ($SCAN_LOCK) - skipping" >&2; exit 0; }
 
 {
   echo "===== ClamAV WordPress scan START $(ts) ====="
