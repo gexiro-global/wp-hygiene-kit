@@ -13,6 +13,10 @@
 #   WP_SCAN_LOG    default /var/log/clamav/wp_scan.log
 #   WP_ALERT_LOG   default /var/log/clamav/wp_scan_INFECTED.log
 #   WP_ALERT_ENV   default ./alert.env  (see alert.env.example - optional)
+#   WP_SCAN_LOCK   default /tmp/wp-clamav-scan.lock
+#
+# Exit: 0 clean | 1 infections found | 2 the scan could not be trusted | 3 clamscan missing
+#       4 another scan was already running, so this one did not happen
 #   plus every WP_/OLS_ variable understood by wp-discover.sh
 set -uo pipefail
 
@@ -72,7 +76,10 @@ if ! { exec 8>"$SCAN_LOCK"; } 2>/dev/null; then
   echo "cannot open lock file $SCAN_LOCK - refusing to scan unserialised" >&2
   exit 2
 fi
-flock -n 8 || { echo "another scan is already running ($SCAN_LOCK) - skipping" >&2; exit 0; }
+# Exit 4, not 0: no scan was performed, and 0 is documented as "completed, nothing found".
+# A cron job that treats a skipped run as a clean one is how a host stops being scanned
+# without anyone noticing.
+flock -n 8 || { echo "another scan is already running ($SCAN_LOCK) - skipping" >&2; exit 4; }
 
 {
   echo "===== ClamAV WordPress scan START $(ts) ====="

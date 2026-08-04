@@ -1,11 +1,13 @@
 #!/bin/bash
 # Offline test suite: builds a synthetic vhost tree in a temp dir. No ClamAV, no Docker, no root.
-# shellcheck disable=SC2015,SC2016,SC2181
+# shellcheck disable=SC2015,SC2016,SC2181,SC2094
 # SC2015: the `[ cond ] && ok "..." || no "..."` shape is intentional here - `ok` cannot fail,
 #         so this is a two-branch report, not a mis-written if-then-else.
 # SC2016: single quotes are deliberate where a literal `$` belongs to awk, python or a stub.
 # SC2181: these suites check `$?` immediately after the command under test, which is the
 #         thing being asserted.
+# SC2094: the lock-contention test deliberately holds the same file the script then tries
+#         to lock - that collision is the property being verified.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(dirname "$HERE")
@@ -165,6 +167,54 @@ verdict_case 1 no  no  1 'an infection exits 1 even when no FOUND line can be pa
 verdict_case 1 yes yes 1 'an infection exits 1 after alerting'
 verdict_case 1 no  yes 1 'an unparseable infection exits 1 even with alerting configured'
 verdict_case 2 no  no  2 'a scanner failure exits 2'
+
+# --- the lock is a safety property, so its failure paths need cases -------------------------
+# Adding the lock without these meant the commit that introduced it changed no test at all.
+LKD=$(mktemp -d); mkdir -p "$LKD/vhosts/s.example" "$LKD/home/s.example/public_html/wp-content" "$LKD/bin"
+printf 'docRoot $VH_ROOT/public_html\nextUser s\n' > "$LKD/vhosts/s.example/vhost.conf"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "$LKD/bin/clamscan"
+printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$LKD/bin/nice"
+printf '%s\n' '#!/bin/bash' 'shift 1; exec "$@"' > "$LKD/bin/ionice"
+chmod +x "$LKD/bin/clamscan" "$LKD/bin/nice" "$LKD/bin/ionice"
+touch "$LKD/lock"
+
+# Contention: no scan happened, so this must not look like a clean result.
+( flock -n 9 || exit 1
+  PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+    WP_SCAN_LOCK="$LKD/lock" WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+    "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+  echo $? > "$LKD/rc" ) 9>"$LKD/lock"
+[ "$(cat "$LKD/rc" 2>/dev/null)" = 4 ] \
+  && ok 'a run skipped for lock contention exits 4, not 0' \
+  || no "a run skipped for lock contention exits 4, not 0 (got $(cat "$LKD/rc" 2>/dev/null))"
+
+# A lock file that cannot be opened must stop the scan.
+PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+  WP_SCAN_LOCK=/dev/null/cannot.lock WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+  "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+[ $? -eq 2 ] && ok 'an unopenable lock file stops the scan' \
+             || no 'an unopenable lock file stops the scan'
+
+# No flock on the system at all: refuse rather than run unserialised.
+mkdir -p "$LKD/noflock"
+for b in bash sh grep sed awk cat date mkdir rm realpath basename dirname head tr sort stat find python3; do
+  src=$(command -v "$b" 2>/dev/null) && ln -sf "$src" "$LKD/noflock/$b" 2>/dev/null
+done
+cp "$LKD/bin/clamscan" "$LKD/bin/nice" "$LKD/bin/ionice" "$LKD/noflock/"
+if ! PATH="$LKD/noflock" command -v flock >/dev/null 2>&1; then
+  OUT=$(PATH="$LKD/noflock" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+        WP_SCAN_LOG="$LKD/s2.log" WP_ALERT_LOG="$LKD/a2.log" \
+        bash "$ROOT/wp-clamav-scan.sh" 2>&1)
+  RC=$?
+  if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'flock is required'; then
+    ok 'a missing flock refuses to scan rather than running unserialised'
+  else
+    no "a missing flock refuses to scan rather than running unserialised (rc=$RC)"
+  fi
+else
+  no 'could not build a PATH without flock for the test'
+fi
+rm -rf "$LKD"
 
 echo
 echo "passed=$PASS failed=$FAIL"

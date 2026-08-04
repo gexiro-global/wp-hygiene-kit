@@ -93,8 +93,10 @@ hits every time a later run happens to be shorter, which trains you to ignore th
 | `1` | No WordPress installations were discovered - a configuration problem, deliberately not reported as "clean" |
 | `2` | The scanner failed, or `alert.env` was refused; results are incomplete |
 | `3` | `clamscan` is not installed |
+| `4` | Another scan held the lock, so this run did not scan anything |
 
-A scan that could not run is never reported as a clean one.
+A scan that could not run is never reported as a clean one - including the case where another
+run held the lock, which exits `4` rather than `0`.
 
 ## What this kit does NOT do
 
