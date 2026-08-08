@@ -287,16 +287,17 @@ printf '%s\n' '#!/bin/bash' 'echo "/x/e.php: X FOUND"' 'exit 1' > "$SL/bin/clams
 printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$SL/bin/nice"
 printf '%s\n' '#!/bin/bash' 'shift 1; exec "$@"' > "$SL/bin/ionice"
 chmod +x "$SL/bin/"*
-printf 'TELEGRAM_BOT_TOKEN=x\n' > "$SL/real.env"; chmod 600 "$SL/real.env"
+# A payload that WOULD run if the file were sourced; O_NOFOLLOW must stop it.
+printf 'touch "%s/PWNED"\n' "$SL" > "$SL/real.env"; chmod 600 "$SL/real.env"
 ln -s "$SL/real.env" "$SL/alert.env"
 OUT=$(PATH="$SL/bin:$PATH" OLS_VHOST_DIR="$SL/vhosts" WP_VHOST_HOME="$SL/home" WP_SKIP_DOCKER=1 \
       WP_SCAN_LOCK_DIR="$SL/lk" WP_SCAN_LOG="$SL/s.log" WP_ALERT_LOG="$SL/a.log" WP_ALERT_ENV="$SL/alert.env" \
       "$ROOT/wp-clamav-scan.sh" 2>&1)
-RC=$?; rm -rf "$SL"
-if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'refusing to read'; then
-  ok 'a symlinked alert.env is refused (O_NOFOLLOW)'
+RC=$?; PWNED=no; [ -e "$SL/PWNED" ] && PWNED=yes; rm -rf "$SL"
+if [ "$RC" -eq 1 ] && [ "$PWNED" = no ] && printf '%s' "$OUT" | grep -q 'skipping notification'; then
+  ok 'a symlinked alert.env is not followed or sourced, and the infection verdict (exit 1) still stands'
 else
-  no "a symlinked alert.env is refused (O_NOFOLLOW) (rc=$RC)"
+  no "a symlinked alert.env is not sourced and exit 1 stands (rc=$RC pwned=$PWNED)"
 fi
 
 # --- wp-permissions-check must not report clean when it inspected nothing ---

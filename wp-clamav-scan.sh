@@ -103,9 +103,12 @@ while :; do
   fi
   _lpar=$(dirname "$_lp"); [ "$_lpar" = "$_lp" ] && break; _lp="$_lpar"
 done
-mkdir -p "$LOCK_DIR" 2>/dev/null
+# Create ONLY the final component (its parent is already validated above). Using
+# `mkdir -p` here would create/traverse intermediate directories that an attacker
+# could have raced in as a symlink; a single mkdir into a validated parent cannot.
+mkdir "$LOCK_DIR" 2>/dev/null || true
 if [ -L "$LOCK_DIR" ] || [ ! -d "$LOCK_DIR" ] || [ "$(stat -c %u "$LOCK_DIR" 2>/dev/null)" != "$MY_UID" ]; then
-  echo "unsafe lock dir $LOCK_DIR (must be a non-symlink directory owned by uid $MY_UID)" >&2; exit 2
+  echo "unsafe lock dir $LOCK_DIR (must be a non-symlink directory owned by uid $MY_UID, under an existing validated parent)" >&2; exit 2
 fi
 if ! { exec 8<"$LOCK_DIR"; } 2>/dev/null; then
   echo "cannot open lock dir $LOCK_DIR - refusing to scan unserialised" >&2
@@ -190,8 +193,14 @@ command -v logger >/dev/null 2>&1 && logger -t wp-clamav-scan "INFECTED: $N hit(
 # file descriptor (fstat: regular file, owner root/us, not group/world-writable, trusted
 # parent), reads it from that descriptor, and emits ONLY the allowlisted keys as
 # shell-quoted assignments. There is no re-open by name and no code execution.
-command -v python3 >/dev/null 2>&1 \
-  || { echo "refusing to read $ALERT_ENV: python3 is unavailable, so it cannot be validated safely" >&2; exit 2; }
+# An infection has ALREADY been found (clamscan exited 1); this block only decides how
+# to notify. A failed or untrusted alert config must NOT change that verdict, so any
+# problem here logs a warning, skips notification, and leaves the run at exit 1. The
+# file is still never sourced and never opened through a followed symlink.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "warning: python3 unavailable; cannot validate $ALERT_ENV safely, skipping notification (infection still reported)" >&2
+  exit 1
+fi
 _alert_kv=$(python3 - "$ALERT_ENV" <<'PY'
 import os, stat, sys, shlex
 path = sys.argv[1]
@@ -239,15 +248,15 @@ PY
 )
 rc=$?
 case "$rc" in
-  0) ;;
-  2) echo "refusing to read $ALERT_ENV: not owned by the scan user or root" >&2; exit 2 ;;
-  3) echo "refusing to read $ALERT_ENV: its directory is world-writable or foreign-owned" >&2; exit 2 ;;
-  *) echo "refusing to read $ALERT_ENV: group/world-writable, a symlink, or its mode cannot be read" >&2; exit 2 ;;
+  0)
+    # Only KEY='shell-quoted-value' for the three allowlisted keys reaches here, produced
+    # by shlex.quote - so this assigns data, it does not execute the file.
+    # shellcheck disable=SC2086
+    eval "$_alert_kv" ;;
+  2) echo "warning: $ALERT_ENV is not owned by the scan user or root; skipping notification (infection still reported)" >&2 ;;
+  3) echo "warning: $ALERT_ENV directory is world-writable or foreign-owned; skipping notification (infection still reported)" >&2 ;;
+  *) echo "warning: $ALERT_ENV is group/world-writable, a symlink, or unreadable; skipping notification (infection still reported)" >&2 ;;
 esac
-# Only KEY='shell-quoted-value' for the three allowlisted keys reaches here, produced by
-# shlex.quote - so this assigns data, it does not execute the file.
-# shellcheck disable=SC2086
-eval "$_alert_kv"
 MSG="ClamAV: $N infected file(s) under WordPress on $(hostname). First lines: $(printf '%s\n' "$HITS" | head -5)"
 
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
