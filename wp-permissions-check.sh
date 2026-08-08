@@ -10,17 +10,21 @@
 #
 # Usage: wp-permissions-check.sh [--quiet]
 # Environment: OLS_VHOST_DIR (default /usr/local/lsws/conf/vhosts)
-# Exit: 0 no mismatches | 1 at least one mismatch
+# Exit: 0 no mismatches | 1 at least one mismatch | 2 nothing could be checked
+#       (missing/unreadable vhost tree, or no eligible WordPress vhost) - not "clean"
 set -uo pipefail
 
 VHOST_DIR="${OLS_VHOST_DIR:-/usr/local/lsws/conf/vhosts}"
 QUIET=0; [ "${1:-}" = "--quiet" ] && QUIET=1
-MISMATCH=0; CHECKED=0
+MISMATCH=0; CHECKED=0; READ_ERR=0
 
 [ "$QUIET" = "0" ] && echo '=== WordPress ownership check ==='
 
 for vhost in "$VHOST_DIR"/*/vhost.conf; do
   [ -f "$vhost" ] || continue
+  # An unreadable vhost.conf is not "no mismatch": we could not inspect it. Record it
+  # as an error so the run cannot report clean while silently skipping configs.
+  [ -r "$vhost" ] || { echo "ERROR cannot read $vhost" >&2; READ_ERR=1; continue; }
   domain=$(basename "$(dirname "$vhost")")
   extuser=$(grep -i 'extUser' "$vhost" 2>/dev/null | head -1 \
             | sed -E 's/^[[:space:]]*[eE][xX][tT][uU][sS][eE][rR][[:space:]]+//; s/[[:space:]]+$//')
@@ -47,5 +51,15 @@ done
 
 if [ "$QUIET" = "0" ]; then
   echo "=== checked $CHECKED WordPress vhost(s), $MISMATCH mismatch(es) ==="
+fi
+# Checking nothing is not a clean result. A missing/unreadable vhost tree or no eligible
+# WordPress vhost must be distinguishable from "checked everything, all owned correctly".
+if [ "$READ_ERR" -ne 0 ]; then
+  echo "one or more vhost configs could not be read - not reporting clean" >&2
+  exit 2
+fi
+if [ "$CHECKED" -eq 0 ]; then
+  echo "no WordPress vhosts were checked (missing/unreadable vhost tree, or none had wp-content) - not reporting clean" >&2
+  exit 2
 fi
 [ "$MISMATCH" -eq 0 ]

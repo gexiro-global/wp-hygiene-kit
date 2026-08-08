@@ -12,8 +12,11 @@
 # Environment:
 #   WP_SCAN_LOG    default /var/log/clamav/wp_scan.log
 #   WP_ALERT_LOG   default /var/log/clamav/wp_scan_INFECTED.log
-#   WP_ALERT_ENV   default ./alert.env  (see alert.env.example - optional)
-#   WP_SCAN_LOCK   default /tmp/wp-clamav-scan.lock
+#   WP_ALERT_ENV   default ./alert.env  (parsed as data, never sourced; see .example)
+#   WP_SCAN_LOCK_DIR default /run/lock/wp-clamav-scan (root). A non-symlink directory
+#                  you own, flock'd read-only (never truncated).
+#   WP_ALLOW_BLIND set to 1 to accept containers that could not be resolved to a host
+#                  path (otherwise a clean visible scan with a blind container exits 2)
 #
 # Exit: 0 clean | 1 infections found | 2 the scan could not be trusted | 3 clamscan missing
 #       4 another scan was already running, so this one did not happen
@@ -69,17 +72,40 @@ command -v clamscan >/dev/null 2>&1 || { echo "clamscan not found - install clam
 # Fail closed, like the rest: the log this run appends to is also the source the alert is
 # extracted from, so two overlapping scans can corrupt the very block used to decide whether
 # anything was found. If the lock cannot be taken, do not scan.
-SCAN_LOCK=${WP_SCAN_LOCK:-/tmp/wp-clamav-scan.lock}
+# Lock a validated, owner-checked directory under /run/lock, opened READ-ONLY (a
+# directory cannot be truncated). A fixed /tmp lock file opened with `>` let a local
+# user pre-plant a symlink and make root truncate an arbitrary file (CWE-59). The
+# whole ancestor chain is validated so a symlink/untrusted-owner parent cannot
+# redirect where we create and open the lock.
 command -v flock >/dev/null 2>&1 \
   || { echo "flock is required so two scans cannot interleave their log" >&2; exit 2; }
-if ! { exec 8>"$SCAN_LOCK"; } 2>/dev/null; then
-  echo "cannot open lock file $SCAN_LOCK - refusing to scan unserialised" >&2
+MY_UID=$(id -u)
+if [ -n "${WP_SCAN_LOCK_DIR:-}" ]; then LOCK_DIR="$WP_SCAN_LOCK_DIR"
+elif [ "$MY_UID" = "0" ]; then LOCK_DIR=/run/lock/wp-clamav-scan
+else LOCK_DIR="${TMPDIR:-/tmp}/wp-clamav-scan-$MY_UID"; fi
+_lp=$(dirname "$LOCK_DIR")
+while :; do
+  if [ -L "$_lp" ]; then echo "lock path ancestor is a symlink: $_lp" >&2; exit 2; fi
+  if [ -e "$_lp" ]; then
+    _lo=$(stat -c %u "$_lp" 2>/dev/null)
+    if [ "$_lo" != "0" ] && [ "$_lo" != "$MY_UID" ]; then
+      echo "lock path ancestor $_lp is owned by uid $_lo (not root or you)" >&2; exit 2
+    fi
+  fi
+  _lpar=$(dirname "$_lp"); [ "$_lpar" = "$_lp" ] && break; _lp="$_lpar"
+done
+mkdir -p "$LOCK_DIR" 2>/dev/null
+if [ -L "$LOCK_DIR" ] || [ ! -d "$LOCK_DIR" ] || [ "$(stat -c %u "$LOCK_DIR" 2>/dev/null)" != "$MY_UID" ]; then
+  echo "unsafe lock dir $LOCK_DIR (must be a non-symlink directory owned by uid $MY_UID)" >&2; exit 2
+fi
+if ! { exec 8<"$LOCK_DIR"; } 2>/dev/null; then
+  echo "cannot open lock dir $LOCK_DIR - refusing to scan unserialised" >&2
   exit 2
 fi
 # Exit 4, not 0: no scan was performed, and 0 is documented as "completed, nothing found".
 # A cron job that treats a skipped run as a clean one is how a host stops being scanned
 # without anyone noticing.
-flock -n 8 || { echo "another scan is already running ($SCAN_LOCK) - skipping" >&2; exit 4; }
+flock -n 8 || { echo "another scan is already running - skipping" >&2; exit 4; }
 
 {
   echo "===== ClamAV WordPress scan START $(ts) ====="
@@ -109,8 +135,17 @@ if [ "${SCAN_RC:-2}" -ge 2 ]; then
   exit 2
 fi
 
-# Nothing found: the one path that may report success.
+# Nothing found in the VISIBLE targets: the one path that may report success - but
+# only if every discovered install was actually scanned. Containers whose host path
+# could not be resolved were never scanned, so a clean visible result is INCOMPLETE,
+# not clean, unless the operator explicitly accepts blind targets.
 if [ "$SCAN_RC" -eq 0 ]; then
+  if [ "${#WP_CONTAINER_BLIND[@]}" -gt 0 ] && [ "${WP_ALLOW_BLIND:-0}" != "1" ]; then
+    echo "[$(ts)] INCOMPLETE visible targets clean, but ${#WP_CONTAINER_BLIND[@]} discovered container(s) could not be resolved to a host path and were NOT scanned - refusing to report clean (set WP_ALLOW_BLIND=1 to accept)" >> "$ALERT"
+    printf 'not scanned (blind container): %s\n' "${WP_CONTAINER_BLIND[@]}" >> "$ALERT"
+    echo "INCOMPLETE: ${#WP_CONTAINER_BLIND[@]} blind container(s) were not scanned; refusing to report clean" >&2
+    exit 2
+  fi
   exit 0
 fi
 
@@ -139,58 +174,71 @@ command -v logger >/dev/null 2>&1 && logger -t wp-clamav-scan "INFECTED: $N hit(
 # must exit 1: a failed notification is not a reason to tell cron the host is clean.
 [ -f "$ALERT_ENV" ] || exit 1
 
-# This file is executed as shell code, so refuse it unless only its owner can write to it.
-# A group- or world-writable alert.env is arbitrary code execution as whoever runs the scan,
-# typically root.
-#
-# `find -perm /022` is a GNU extension: on BSD and macOS it errors out, and with stderr
-# discarded that reads as "not writable" - the check would fail OPEN on exactly the systems it
-# was not tested on. This uses python3 and refuses to source the file if the mode cannot be
-# determined at all.
-if command -v python3 >/dev/null 2>&1; then
-  python3 - "$ALERT_ENV" <<'PY'
-import os
-import stat
-import sys
-
+# The alert config is NOT sourced as shell code. Sourcing by pathname after a separate
+# stat() is a TOCTOU: an attacker who controls a symlink in a sticky directory can point
+# it at a safe file during the check and swap it before the source, running arbitrary
+# code as root. Instead python3 opens the file ONCE with O_NOFOLLOW, validates that same
+# file descriptor (fstat: regular file, owner root/us, not group/world-writable, trusted
+# parent), reads it from that descriptor, and emits ONLY the allowlisted keys as
+# shell-quoted assignments. There is no re-open by name and no code execution.
+command -v python3 >/dev/null 2>&1 \
+  || { echo "refusing to read $ALERT_ENV: python3 is unavailable, so it cannot be validated safely" >&2; exit 2; }
+_alert_kv=$(python3 - "$ALERT_ENV" <<'PY'
+import os, stat, sys, shlex
 path = sys.argv[1]
+ALLOW = {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ALERT_WEBHOOK"}
 try:
-    st = os.stat(path)
-except OSError:
-    sys.exit(1)                      # cannot tell -> treat as unsafe
-
-if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-    sys.exit(1)                      # someone else can rewrite it
-
-# Mode alone is not enough. A file owned by a site user, mode 600, is still that user's code
-# running as whoever launched the scan - typically root. Accept it only if it belongs to the
-# running user or to root.
-if st.st_uid not in (os.geteuid(), 0):
-    sys.exit(2)
-
-# The directory it sits in must not be writable by others either, or the file can be replaced.
-parent = os.path.dirname(os.path.abspath(path)) or "."
-try:
-    pst = os.stat(parent)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)   # never follow a final symlink
 except OSError:
     sys.exit(1)
-if pst.st_mode & stat.S_IWOTH and not (pst.st_mode & stat.S_ISVTX):
-    sys.exit(3)
-sys.exit(0)
+try:
+    st = os.fstat(fd)                                  # validate the OPEN fd, not a path
+    if not stat.S_ISREG(st.st_mode):
+        sys.exit(1)
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        sys.exit(1)                                    # someone else can rewrite it
+    if st.st_uid not in (os.geteuid(), 0):
+        sys.exit(2)                                    # owned by a site user = their code
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    pst = os.stat(parent)
+    if (pst.st_mode & stat.S_IWOTH) and not (pst.st_mode & stat.S_ISVTX):
+        sys.exit(3)                                    # world-writable, non-sticky parent
+    if pst.st_uid not in (os.geteuid(), 0):
+        sys.exit(3)                                    # untrusted parent owner
+    data = os.fdopen(fd, "r", closefd=False).read()
+finally:
+    os.close(fd)
+out = []
+for line in data.splitlines():
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("export "):
+        line = line[7:].strip()
+    if "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    k = k.strip()
+    if k not in ALLOW:
+        continue
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1]
+    out.append("%s=%s" % (k, shlex.quote(v)))
+print("\n".join(out))
 PY
-  rc=$?
-  case "$rc" in
-    0) ;;
-    2) echo "refusing to source $ALERT_ENV: it is not owned by the user running the scan or by root" >&2; exit 2 ;;
-    3) echo "refusing to source $ALERT_ENV: its directory is world-writable, so the file can be replaced" >&2; exit 2 ;;
-    *) echo "refusing to source $ALERT_ENV: it is group/world-writable or its mode cannot be read" >&2; exit 2 ;;
-  esac
-else
-  echo "refusing to source $ALERT_ENV: python3 is unavailable, so its permissions cannot be verified" >&2
-  exit 2
-fi
-# shellcheck disable=SC1090
-. "$ALERT_ENV"
+)
+rc=$?
+case "$rc" in
+  0) ;;
+  2) echo "refusing to read $ALERT_ENV: not owned by the scan user or root" >&2; exit 2 ;;
+  3) echo "refusing to read $ALERT_ENV: its directory is world-writable or foreign-owned" >&2; exit 2 ;;
+  *) echo "refusing to read $ALERT_ENV: group/world-writable, a symlink, or its mode cannot be read" >&2; exit 2 ;;
+esac
+# Only KEY='shell-quoted-value' for the three allowlisted keys reaches here, produced by
+# shlex.quote - so this assigns data, it does not execute the file.
+# shellcheck disable=SC2086
+eval "$_alert_kv"
 MSG="ClamAV: $N infected file(s) under WordPress on $(hostname). First lines: $(printf '%s\n' "$HITS" | head -5)"
 
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then

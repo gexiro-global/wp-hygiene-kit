@@ -68,7 +68,8 @@ Nightly, via cron:
 | Variable | Default | Meaning |
 |---|---|---|
 | `WP_CONTENT_ONLY` | `0` | Set to `1` to scan only `wp-content` instead of the whole installation |
-| `WP_SCAN_LOCK` | `/tmp/wp-clamav-scan.lock` | Lock file preventing two concurrent scans |
+| `WP_SCAN_LOCK_DIR` | `/run/lock/wp-clamav-scan` (root) | Directory flock'd (opened read-only, never truncated) to prevent two concurrent scans; must be a non-symlink directory you own |
+| `WP_ALLOW_BLIND` | unset | Set to `1` to accept containers with no resolvable host path; otherwise a clean visible scan with a blind container exits `2` (incomplete) |
 | `OLS_VHOST_DIR` | `/usr/local/lsws/conf/vhosts` | Vhost config root |
 | `WP_VHOST_HOME` | `/home` | Expansion for `$VH_ROOT` in `docRoot` |
 | `WP_EXTRA_ROOTS` | *(unset)* | Space-separated globs of additional site roots |

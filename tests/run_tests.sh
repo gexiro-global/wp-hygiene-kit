@@ -153,7 +153,7 @@ verdict_case(){ # <scanner-rc> <emit-FOUND> <alert.env> <expected-wrapper-rc> <l
     extra=(WP_ALERT_ENV="$vt/alert.env")
   fi
   env PATH="$vs:$PATH" OLS_VHOST_DIR="$vt/vhosts" WP_VHOST_HOME="$vt/home" WP_SKIP_DOCKER=1 \
-      WP_SCAN_LOG="$vt/s.log" WP_ALERT_LOG="$vt/a.log" WP_SCAN_LOCK="$vt/lk" \
+      WP_SCAN_LOG="$vt/s.log" WP_ALERT_LOG="$vt/a.log" WP_SCAN_LOCK_DIR="$vt/lk" \
       ${extra[@]+"${extra[@]}"} \
       "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
   local rc=$?
@@ -176,24 +176,34 @@ printf '%s\n' '#!/bin/bash' 'exit 0' > "$LKD/bin/clamscan"
 printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$LKD/bin/nice"
 printf '%s\n' '#!/bin/bash' 'shift 1; exec "$@"' > "$LKD/bin/ionice"
 chmod +x "$LKD/bin/clamscan" "$LKD/bin/nice" "$LKD/bin/ionice"
-touch "$LKD/lock"
 
-# Contention: no scan happened, so this must not look like a clean result.
-( flock -n 9 || exit 1
-  PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
-    WP_SCAN_LOCK="$LKD/lock" WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
-    "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
-  echo $? > "$LKD/rc" ) 9>"$LKD/lock"
-[ "$(cat "$LKD/rc" 2>/dev/null)" = 4 ] \
-  && ok 'a run skipped for lock contention exits 4, not 0' \
-  || no "a run skipped for lock contention exits 4, not 0 (got $(cat "$LKD/rc" 2>/dev/null))"
-
-# A lock file that cannot be opened must stop the scan.
+# Contention: hold a lock on the SAME directory the script will flock, then run it.
+CLK=$(mktemp -d)
+exec 200<"$CLK"; flock -n 200 || no 'test could not take its own lock'
 PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
-  WP_SCAN_LOCK=/dev/null/cannot.lock WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+  WP_SCAN_LOCK_DIR="$CLK" WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
   "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
-[ $? -eq 2 ] && ok 'an unopenable lock file stops the scan' \
-             || no 'an unopenable lock file stops the scan'
+RC=$?
+exec 200<&-; rm -rf "$CLK"
+[ "$RC" -eq 4 ] \
+  && ok 'a run skipped for lock contention exits 4, not 0' \
+  || no "a run skipped for lock contention exits 4, not 0 (got $RC)"
+
+# A lock directory that cannot be created/opened must stop the scan.
+PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+  WP_SCAN_LOCK_DIR=/dev/null/cannot WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+  "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+[ $? -eq 2 ] && ok 'an unusable lock directory stops the scan' \
+             || no 'an unusable lock directory stops the scan'
+
+# A symlinked lock-path ancestor must be refused.
+SAW=$(mktemp -d); ln -s /tmp "$SAW/link"
+PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+  WP_SCAN_LOCK_DIR="$SAW/link/sub" WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+  "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+RC=$?; rm -rf "$SAW"
+[ "$RC" -eq 2 ] && ok 'a symlinked lock-path ancestor stops the scan' \
+               || no "a symlinked lock-path ancestor stops the scan (rc=$RC)"
 
 # No flock on the system at all: refuse rather than run unserialised.
 mkdir -p "$LKD/noflock"
@@ -215,6 +225,56 @@ else
   no 'could not build a PATH without flock for the test'
 fi
 rm -rf "$LKD"
+
+# --- a clean visible scan with an unscanned (blind) container is INCOMPLETE, not clean ---
+BLIND=$(mktemp -d); mkdir -p "$BLIND/vhosts/s.example" "$BLIND/home/s.example/public_html/wp-content" "$BLIND/bin"
+printf 'docRoot $VH_ROOT/public_html\nextUser s\n' > "$BLIND/vhosts/s.example/vhost.conf"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "$BLIND/bin/clamscan"
+printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$BLIND/bin/nice"
+printf '%s\n' '#!/bin/bash' 'shift 1; exec "$@"' > "$BLIND/bin/ionice"
+printf '%s\n' '#!/bin/bash' 'if [ "$1" = ps ]; then echo wordpress-blind; elif [ "$1" = inspect ]; then echo ""; fi' > "$BLIND/bin/docker"
+chmod +x "$BLIND/bin/"*
+OUT=$(PATH="$BLIND/bin:$PATH" OLS_VHOST_DIR="$BLIND/vhosts" WP_VHOST_HOME="$BLIND/home" WP_SKIP_DOCKER=0 \
+      WP_SCAN_LOCK_DIR="$BLIND/lk" WP_SCAN_LOG="$BLIND/s.log" WP_ALERT_LOG="$BLIND/a.log" \
+      "$ROOT/wp-clamav-scan.sh" 2>&1)
+RC=$?
+if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'blind container'; then
+  ok 'a clean visible scan with a blind container exits 2, not clean'
+else
+  no "a clean visible scan with a blind container exits 2, not clean (rc=$RC)"
+fi
+PATH="$BLIND/bin:$PATH" OLS_VHOST_DIR="$BLIND/vhosts" WP_VHOST_HOME="$BLIND/home" WP_SKIP_DOCKER=0 \
+  WP_ALLOW_BLIND=1 WP_SCAN_LOCK_DIR="$BLIND/lk2" WP_SCAN_LOG="$BLIND/s2.log" WP_ALERT_LOG="$BLIND/a2.log" \
+  "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+[ $? -eq 0 ] && ok 'WP_ALLOW_BLIND=1 explicitly accepts blind containers' \
+             || no 'WP_ALLOW_BLIND=1 explicitly accepts blind containers'
+rm -rf "$BLIND"
+
+# --- a symlinked alert.env is refused (O_NOFOLLOW closes the stat-then-source TOCTOU) ---
+SL=$(mktemp -d); mkdir -p "$SL/vhosts/s.example" "$SL/home/s.example/public_html/wp-content" "$SL/bin"
+printf 'docRoot $VH_ROOT/public_html\nextUser s\n' > "$SL/vhosts/s.example/vhost.conf"
+printf '%s\n' '#!/bin/bash' 'echo "/x/e.php: X FOUND"' 'exit 1' > "$SL/bin/clamscan"
+printf '%s\n' '#!/bin/bash' 'shift 2; exec "$@"' > "$SL/bin/nice"
+printf '%s\n' '#!/bin/bash' 'shift 1; exec "$@"' > "$SL/bin/ionice"
+chmod +x "$SL/bin/"*
+printf 'TELEGRAM_BOT_TOKEN=x\n' > "$SL/real.env"; chmod 600 "$SL/real.env"
+ln -s "$SL/real.env" "$SL/alert.env"
+OUT=$(PATH="$SL/bin:$PATH" OLS_VHOST_DIR="$SL/vhosts" WP_VHOST_HOME="$SL/home" WP_SKIP_DOCKER=1 \
+      WP_SCAN_LOCK_DIR="$SL/lk" WP_SCAN_LOG="$SL/s.log" WP_ALERT_LOG="$SL/a.log" WP_ALERT_ENV="$SL/alert.env" \
+      "$ROOT/wp-clamav-scan.sh" 2>&1)
+RC=$?; rm -rf "$SL"
+if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'refusing to read'; then
+  ok 'a symlinked alert.env is refused (O_NOFOLLOW)'
+else
+  no "a symlinked alert.env is refused (O_NOFOLLOW) (rc=$RC)"
+fi
+
+# --- wp-permissions-check must not report clean when it inspected nothing ---
+EMPTY=$(mktemp -d); mkdir -p "$EMPTY/vhosts"
+OLS_VHOST_DIR="$EMPTY/vhosts" "$ROOT/wp-permissions-check.sh" >/dev/null 2>&1
+RC=$?; rm -rf "$EMPTY"
+[ "$RC" -eq 2 ] && ok 'a permissions check that inspected nothing exits 2, not clean' \
+               || no "a permissions check that inspected nothing exits 2, not clean (rc=$RC)"
 
 echo
 echo "passed=$PASS failed=$FAIL"
