@@ -214,6 +214,15 @@ RC=$?; rm -rf "$WW"
 [ "$RC" -eq 2 ] && ok 'a world-writable non-sticky lock ancestor stops the scan' \
                || no "a world-writable non-sticky lock ancestor stops the scan (rc=$RC)"
 
+# A GROUP-writable (not other-writable) non-sticky ancestor is untrusted too.
+GW=$(mktemp -d); mkdir -p "$GW/anc"; chmod 0770 "$GW/anc"
+PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+  WP_SCAN_LOCK_DIR="$GW/anc/sub" WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+  "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+RC=$?; rm -rf "$GW"
+[ "$RC" -eq 2 ] && ok 'a group-writable non-sticky lock ancestor stops the scan' \
+               || no "a group-writable non-sticky lock ancestor stops the scan (rc=$RC)"
+
 # A sticky world-writable ancestor (like /tmp or /run/lock) is fine: only the owner can
 # rename/delete an entry, so our created lock dir cannot be swapped.
 ST=$(mktemp -d); mkdir -p "$ST/anc"; chmod 1777 "$ST/anc"

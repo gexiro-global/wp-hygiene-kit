@@ -96,9 +96,11 @@ while :; do
     if [ "$_lo" != "0" ] && [ "$_lo" != "$MY_UID" ]; then
       echo "lock path ancestor $_lp is owned by uid $_lo (not root or you)" >&2; exit 2
     fi
+    # Reject a group- OR other-writable (022) ancestor unless it is sticky (1000):
+    # a non-sticky writable ancestor lets someone other than the owner swap entries.
     _lm=$(stat -c %a "$_lp" 2>/dev/null); _lm=${_lm:-0}
-    if [ "$(( (8#$_lm) & 2 ))" -ne 0 ] && [ "$(( (8#$_lm) & 512 ))" -eq 0 ]; then
-      echo "lock path ancestor $_lp is world-writable and not sticky" >&2; exit 2
+    if [ "$(( (8#$_lm) & 18 ))" -ne 0 ] && [ "$(( (8#$_lm) & 512 ))" -eq 0 ]; then
+      echo "lock path ancestor $_lp is group/world-writable and not sticky" >&2; exit 2
     fi
   fi
   _lpar=$(dirname "$_lp"); [ "$_lpar" = "$_lp" ] && break; _lp="$_lpar"
