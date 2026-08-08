@@ -205,6 +205,36 @@ RC=$?; rm -rf "$SAW"
 [ "$RC" -eq 2 ] && ok 'a symlinked lock-path ancestor stops the scan' \
                || no "a symlinked lock-path ancestor stops the scan (rc=$RC)"
 
+# A world-writable, NON-sticky ancestor is untrusted (anyone can swap entries).
+WW=$(mktemp -d); mkdir -p "$WW/anc"; chmod 0777 "$WW/anc"
+PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+  WP_SCAN_LOCK_DIR="$WW/anc/sub" WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+  "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+RC=$?; rm -rf "$WW"
+[ "$RC" -eq 2 ] && ok 'a world-writable non-sticky lock ancestor stops the scan' \
+               || no "a world-writable non-sticky lock ancestor stops the scan (rc=$RC)"
+
+# A sticky world-writable ancestor (like /tmp or /run/lock) is fine: only the owner can
+# rename/delete an entry, so our created lock dir cannot be swapped.
+ST=$(mktemp -d); mkdir -p "$ST/anc"; chmod 1777 "$ST/anc"
+PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+  WP_SCAN_LOCK_DIR="$ST/anc/sub" WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+  "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+RC=$?; rm -rf "$ST"
+[ "$RC" -eq 0 ] && ok 'a sticky world-writable lock ancestor is accepted' \
+               || no "a sticky world-writable lock ancestor is accepted (rc=$RC)"
+
+# The lock path itself planted as a symlink to a victim FILE must be refused and the
+# victim must not be truncated (the CWE-59 primitive is gone: we open a directory RO).
+VIC=$(mktemp -d); printf 'KEEP\n' > "$VIC/victim"; ln -s "$VIC/victim" "$VIC/lock"
+PATH="$LKD/bin:$PATH" OLS_VHOST_DIR="$LKD/vhosts" WP_VHOST_HOME="$LKD/home" WP_SKIP_DOCKER=1 \
+  WP_SCAN_LOCK_DIR="$VIC/lock" WP_SCAN_LOG="$LKD/s.log" WP_ALERT_LOG="$LKD/a.log" \
+  "$ROOT/wp-clamav-scan.sh" >/dev/null 2>&1
+RC=$?; CONTENT=$(cat "$VIC/victim"); rm -rf "$VIC"
+[ "$RC" -eq 2 ] && [ "$CONTENT" = KEEP ] \
+  && ok 'a symlinked lock path is refused and its target is not truncated' \
+  || no "a symlinked lock path is refused and its target intact (rc=$RC content=$CONTENT)"
+
 # No flock on the system at all: refuse rather than run unserialised.
 mkdir -p "$LKD/noflock"
 for b in bash sh grep sed awk cat date mkdir rm realpath basename dirname head tr sort stat find python3; do

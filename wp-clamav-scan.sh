@@ -82,7 +82,12 @@ command -v flock >/dev/null 2>&1 \
 MY_UID=$(id -u)
 if [ -n "${WP_SCAN_LOCK_DIR:-}" ]; then LOCK_DIR="$WP_SCAN_LOCK_DIR"
 elif [ "$MY_UID" = "0" ]; then LOCK_DIR=/run/lock/wp-clamav-scan
+elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then LOCK_DIR="$XDG_RUNTIME_DIR/wp-clamav-scan"
 else LOCK_DIR="${TMPDIR:-/tmp}/wp-clamav-scan-$MY_UID"; fi
+# Validate the whole ancestor chain: reject a symlink, an untrusted owner, or a
+# world-writable ancestor that is NOT sticky. (A sticky world-writable dir such as
+# /run/lock or /tmp is fine: sticky means only the owner can rename/delete an entry,
+# so an attacker cannot swap our validated, owner-checked lock directory once created.)
 _lp=$(dirname "$LOCK_DIR")
 while :; do
   if [ -L "$_lp" ]; then echo "lock path ancestor is a symlink: $_lp" >&2; exit 2; fi
@@ -90,6 +95,10 @@ while :; do
     _lo=$(stat -c %u "$_lp" 2>/dev/null)
     if [ "$_lo" != "0" ] && [ "$_lo" != "$MY_UID" ]; then
       echo "lock path ancestor $_lp is owned by uid $_lo (not root or you)" >&2; exit 2
+    fi
+    _lm=$(stat -c %a "$_lp" 2>/dev/null); _lm=${_lm:-0}
+    if [ "$(( (8#$_lm) & 2 ))" -ne 0 ] && [ "$(( (8#$_lm) & 512 ))" -eq 0 ]; then
+      echo "lock path ancestor $_lp is world-writable and not sticky" >&2; exit 2
     fi
   fi
   _lpar=$(dirname "$_lp"); [ "$_lpar" = "$_lp" ] && break; _lp="$_lpar"
