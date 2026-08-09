@@ -1,6 +1,6 @@
 # wp-hygiene-kit
 
-[![CI](https://github.com/dzeusking-dev/wp-hygiene-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/dzeusking-dev/wp-hygiene-kit/actions/workflows/ci.yml)
+[![CI](https://github.com/gexiro-global/wp-hygiene-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/gexiro-global/wp-hygiene-kit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Read-only hygiene checks for hosts that serve many WordPress sites, built around one idea:
@@ -34,7 +34,7 @@ them would be worse than saying so.
 ## Install
 
 ```bash
-git clone https://github.com/dzeusking-dev/wp-hygiene-kit.git
+git clone https://github.com/gexiro-global/wp-hygiene-kit.git
 cd wp-hygiene-kit
 ./wp-discover.sh          # see what it finds before running anything else
 ```
