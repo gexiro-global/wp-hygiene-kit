@@ -1,9 +1,9 @@
 # wp-hygiene-kit
 
 [![CI](https://github.com/gexiro-global/wp-hygiene-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/gexiro-global/wp-hygiene-kit/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Read-only hygiene checks for hosts that serve many WordPress sites, built around one idea:
+Read-only hygiene checks for hosts serving multiple WordPress sites, built around one idea:
 **find the sites you are actually serving, not the ones that happen to be on disk.**
 
 | Script | What it does |
@@ -13,7 +13,7 @@ Read-only hygiene checks for hosts that serve many WordPress sites, built around
 | `wp-permissions-check.sh` | Reports vhosts where the PHP user does not own `wp-content`. |
 
 None of them modify, quarantine or repair a WordPress installation. `wp-clamav-scan.sh` does
-write its own log files (and creates their directory), and sends an alert if you configure one -
+write its own log files (and creates their directory), and sends an alert if you configure one —
 that is the only thing any of them writes.
 
 ## Why discovery is the hard part
@@ -91,12 +91,12 @@ hits every time a later run happens to be shorter, which trains you to ignore th
 | Code | Meaning |
 |---|---|
 | `0` | Scan completed, nothing found |
-| `1` | No WordPress installations were discovered - a configuration problem, deliberately not reported as "clean" |
+| `1` | No WordPress installations were discovered — a configuration problem, deliberately not reported as "clean" |
 | `2` | The scanner failed, or `alert.env` was refused; results are incomplete |
 | `3` | `clamscan` is not installed |
 | `4` | Another scan held the lock, so this run did not scan anything |
 
-A scan that could not run is never reported as a clean one - including the case where another
+A scan that could not run is never reported as a clean one — including the case where another
 run held the lock, which exits `4` rather than `0`.
 
 ## What this kit does NOT do
@@ -106,7 +106,7 @@ run held the lock, which exits `4` rather than `0`.
 - It does not change ownership or permissions — `wp-permissions-check` reports, nothing else.
 - ClamAV is a signature scanner. It catches commodity PHP malware and known droppers. It will not
   reliably catch a targeted or obfuscated backdoor, and a clean scan is not proof of a clean site.
-- It scans the WordPress installation directory - core files, `wp-admin`, `wp-includes`,
+- It scans the WordPress installation directory — core files, `wp-admin`, `wp-includes`,
   `wp-content` and anything else dropped in the document root. Set `WP_CONTENT_ONLY=1` for the
   narrower sweep if runtime matters more to you than coverage.
 - It does not scan the database, and a large share of real WordPress compromise lives there.
@@ -132,4 +132,6 @@ paths. No real ClamAV, no Docker, no root, no network.
 Apache-2.0. See [LICENSE](LICENSE). These are server-side administration scripts and do not link
 or derive from WordPress code, so no GPL obligation is inherited.
 
-Built and maintained by Gexiro Global Enterprises Ltd.
+Built and maintained by [Gexiro Global Enterprises Ltd](https://gexiro.com).
+
+Part of the [Gexiro open-source toolkit](https://github.com/gexiro-global).
