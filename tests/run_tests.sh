@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Offline test suite: builds a synthetic vhost tree in a temp dir. No ClamAV, no Docker, no root.
 # shellcheck disable=SC2015,SC2016,SC2181,SC2094
 # SC2015: the `[ cond ] && ok "..." || no "..."` shape is intentional here - `ok` cannot fail,
@@ -319,7 +319,6 @@ RC=$?; rm -rf "$EMPTY"
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]
-
 
 
 
